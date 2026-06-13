@@ -21,7 +21,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from src.fl.server_clustering import assign_new_client  # noqa: E402
+from src.fl.server_clustering import perform_clustering  # noqa: E402
 from src.models.lstm import LightweightLSTM  # noqa: E402
 
 
@@ -391,6 +391,62 @@ class CentralRegistry:
         self.aggregated_models[cluster_key] = output_path
         return output_path
 
+    def _recluster_all_clients(self, metric: str = "cosine") -> dict[str, Any]:
+        client_ids = sorted(self.clients.keys())
+        if not client_ids:
+            self.bubbles = []
+            self.isolated = []
+            self.aggregated_models = {}
+            return {
+                "clientIds": [],
+                "labels": [],
+                "kStar": 0,
+            }
+
+        if len(client_ids) == 1:
+            self.bubbles = []
+            self.isolated = [client_ids[0]]
+            self.aggregated_models = {}
+            return {
+                "clientIds": client_ids,
+                "labels": [0],
+                "kStar": 1,
+            }
+
+        importance_matrix = np.stack(
+            [self.clients[client_id].importance for client_id in client_ids],
+            axis=0,
+        )
+        labels, k_star, _, _ = perform_clustering(
+            importance_matrix,
+            metric=metric,
+        )
+
+        members_by_label: dict[int, list[str]] = {}
+        for client_id, label in zip(client_ids, labels, strict=True):
+            members_by_label.setdefault(int(label), []).append(client_id)
+
+        multi_client_bubbles: list[list[str]] = []
+        isolated_clients: list[str] = []
+        for label in sorted(members_by_label.keys()):
+            members = members_by_label[label]
+            if len(members) > 1:
+                multi_client_bubbles.append(members)
+            else:
+                isolated_clients.extend(members)
+
+        self.bubbles = multi_client_bubbles
+        self.isolated = isolated_clients
+        self.aggregated_models = {}
+        for bubble_index, member_ids in enumerate(self.bubbles):
+            self._aggregate_models(member_ids, f"cluster_{bubble_index}")
+
+        return {
+            "clientIds": client_ids,
+            "labels": [int(label) for label in labels],
+            "kStar": int(k_star),
+        }
+
     def register_client(
         self,
         client_id: str,
@@ -418,18 +474,18 @@ class CentralRegistry:
             sample_weight=sample_weight,
         )
 
-        assignment = assign_new_client(
-            self.clients[client_id].importance,
-            self._existing_importances(exclude=client_id),
-            self.bubbles,
-            self.isolated,
-            metric="cosine",
-            new_client_id=client_id,
-        )
-        self.bubbles = [list(bubble) for bubble in assignment["bubbles"] if len(bubble) > 1]
-        self.isolated = list(assignment["isolated"])
+        reclustering = self._recluster_all_clients(metric="cosine")
 
-        member_ids = self._cluster_members_after_assignment(client_id, assignment)
+        assigned_cluster_id = None
+        member_ids = [client_id]
+        assigned_to = "isolated"
+        for bubble_index, bubble_members in enumerate(self.bubbles):
+            if client_id in bubble_members:
+                assigned_cluster_id = bubble_index
+                member_ids = list(bubble_members)
+                assigned_to = "bubble"
+                break
+
         similar_clients = sorted(
             [
                 {
@@ -442,11 +498,7 @@ class CentralRegistry:
             key=lambda item: item["distance"],
         )
 
-        aggregated_model_path = None
-        if len(member_ids) > 1:
-            cluster_key = f"cluster_{assignment['bubble_index']}"
-            aggregated_model_path = self._aggregate_models(member_ids, cluster_key)
-
+        aggregated_model_path = self.aggregated_models.get(f"cluster_{assigned_cluster_id}") if assigned_cluster_id is not None else None
         fl_model_path = aggregated_model_path or model_path
         self._persist_state()
         return {
@@ -454,12 +506,14 @@ class CentralRegistry:
             "replacedExisting": replaced_existing,
             "importancePath": str(importance_path),
             "modelPath": str(model_path),
-            "assignedTo": assignment["assigned_to"],
-            "clusterId": assignment["bubble_index"],
+            "assignedTo": assigned_to,
+            "clusterId": assigned_cluster_id,
             "clusterMembers": member_ids,
             "similarClients": similar_clients[:5],
-            "distance": assignment["distance"],
-            "threshold": assignment["threshold"],
+            "distance": None,
+            "threshold": None,
+            "kStar": reclustering["kStar"],
+            "totalClients": len(reclustering["clientIds"]),
             "aggregatedModelPath": str(aggregated_model_path) if aggregated_model_path else None,
             "flModelPath": str(fl_model_path),
             "flModelDownloadUrl": f"/clients/{client_id}/fl-model",
