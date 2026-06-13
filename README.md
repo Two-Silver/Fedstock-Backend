@@ -36,6 +36,6 @@ uvicorn app.main:app --reload --port 8100
 - `GET /state/summary`
 - `GET /clients`
 - `GET /clusters`
-- `GET /clients/{client_id}/effective-model`
+- `GET /clients/{client_id}/fl-model`
 - `POST /clients/register`
 - `POST /predict`

@@ -447,7 +447,7 @@ class CentralRegistry:
             cluster_key = f"cluster_{assignment['bubble_index']}"
             aggregated_model_path = self._aggregate_models(member_ids, cluster_key)
 
-        effective_model_path = aggregated_model_path or model_path
+        fl_model_path = aggregated_model_path or model_path
         self._persist_state()
         return {
             "clientId": client_id,
@@ -461,8 +461,8 @@ class CentralRegistry:
             "distance": assignment["distance"],
             "threshold": assignment["threshold"],
             "aggregatedModelPath": str(aggregated_model_path) if aggregated_model_path else None,
-            "effectiveModelPath": str(effective_model_path),
-            "effectiveModelDownloadUrl": f"/clients/{client_id}/effective-model",
+            "flModelPath": str(fl_model_path),
+            "flModelDownloadUrl": f"/clients/{client_id}/fl-model",
             "bubbles": self.bubbles,
             "isolated": self.isolated,
         }
@@ -517,8 +517,8 @@ def clusters() -> dict[str, Any]:
     }
 
 
-@app.get("/clients/{client_id}/effective-model")
-def download_effective_model(client_id: str) -> FileResponse:
+@app.get("/clients/{client_id}/fl-model")
+def download_fl_model(client_id: str) -> FileResponse:
     if client_id not in registry.clients:
         raise HTTPException(status_code=404, detail=f"Unknown client: {client_id}")
 
@@ -532,7 +532,7 @@ def download_effective_model(client_id: str) -> FileResponse:
 
     return FileResponse(
         path=str(model_path),
-        filename=f"client_{client_id}_effective.pt",
+        filename=f"client_{client_id}_FL.pt",
         media_type="application/octet-stream",
     )
 
